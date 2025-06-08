@@ -157,7 +157,7 @@ class ModelEnsemble:
         drop2 = Dropout(0.2)(bn2)
         
         # Dense layers with skip connections
-        dense1 = Dense(32, activation='relu',
+        dense1 = Dense(64, activation='relu',
                       kernel_regularizer=l2(0.001))(drop2)
         bn3 = BatchNormalization()(dense1)
         drop3 = Dropout(0.1)(bn3)
