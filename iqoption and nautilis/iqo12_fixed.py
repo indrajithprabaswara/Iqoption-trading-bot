@@ -17,20 +17,15 @@ Fill in USERNAME and PASSWORD below.
 #####################################
 import time, csv, os, numpy as np, datetime, random, pandas as pd
 from iqoptionapi.stable_api import IQ_Option
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, load_model, Model
 from tensorflow.keras.layers import Dense, LSTM, Dropout, BatchNormalization, Conv1D, Input, Add
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.regularizers import l2
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
-import tensorflow.keras.backend as K
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 import traceback # For detailed error logging
-from sklearn.ensemble import VotingClassifier
 from sklearn.model_selection import TimeSeriesSplit
-import joblib
 
 #####################################
 # TensorFlow Configuration
@@ -69,9 +64,10 @@ def configure_tensorflow():
 #####################################
 # Configuration & Constants
 #####################################
-USERNAME = "eaglelab23@gmail.com"      # <<< --- !!! FILL YOUR IQ OPTION EMAIL HERE !!!
-PASSWORD = "Polboti1@"          # <<< --- !!! FILL YOUR IQ OPTION PASSWORD HERE !!!
+USERNAME = os.getenv("IQOPTION_USERNAME")
+PASSWORD = os.getenv("IQOPTION_PASSWORD")
 PRACTICE_MODE = "PRACTICE"
+TEST_MODE = os.getenv("IQOPTION_TEST_MODE", "0") == "1"
 
 ASSET = "EURUSD-OTC"
 BASE_AMOUNT = 1
@@ -319,7 +315,7 @@ class ModelEnsemble:
                 continue
         
         if not predictions:
-            return None
+            return None, None
             
         # Weighted ensemble prediction
         weights = np.array(weights)
@@ -328,8 +324,10 @@ class ModelEnsemble:
         weighted_predictions = np.zeros_like(predictions[0])
         for pred, weight in zip(predictions, weights):
             weighted_predictions += pred * weight
-            
-        return weighted_predictions
+
+        confidence = np.abs(weighted_predictions - 0.5) * 2
+
+        return weighted_predictions, confidence
 
 #####################################
 # Pattern Recognizer
@@ -431,7 +429,7 @@ def log_trade(file_path, row):
             
         writer.writerow(row)
 
-def log_full_history(file_path, row): 
+def log_full_history(file_path, row):
     with open(file_path, "a", newline="") as f:
         writer = csv.writer(f)
         expected_columns = 18  # Number of expected columns for full_history_log.csv
@@ -442,8 +440,25 @@ def log_full_history(file_path, row):
             
         if len(row) > expected_columns:
             row = row[:expected_columns]
-            
+
         writer.writerow(row)
+
+def validate_config():
+    """Ensure required configuration is present."""
+    valid = True
+    if not USERNAME or not PASSWORD:
+        print(
+            "Error: IQ Option credentials not set. Please set IQOPTION_USERNAME and IQOPTION_PASSWORD environment variables."
+        )
+        valid = False
+
+    # Ensure log files exist
+    if not os.path.exists(LOG_FILE):
+        print(f"{LOG_FILE} not found - it will be created.")
+    if not os.path.exists(FULL_HISTORY_LOG_FILE):
+        print(f"{FULL_HISTORY_LOG_FILE} not found - it will be created.")
+
+    return valid
 
 #####################################
 # Helper Functions
@@ -653,6 +668,9 @@ def main():
         if not validate_config():
             print("Configuration validation failed. Please fix the issues above.")
             return
+
+        init_log(LOG_FILE)
+        init_full_history_log(FULL_HISTORY_LOG_FILE)
             
         print("Setting TensorFlow environment variables...")
         os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
@@ -682,10 +700,10 @@ def main():
             
             # Test prediction on a few samples
             test_samples = features[:5]
-            predictions = model_ensemble.predict(test_samples)
+            preds, confs = model_ensemble.predict(test_samples)
             print(f"\nTest predictions:")
-            for i, (pred, actual) in enumerate(zip(predictions, outcomes[:5])):
-                print(f"Sample {i+1}: Predicted {pred[0]:.3f}, Actual {actual}")
+            for i, (pred, conf, actual) in enumerate(zip(preds, confs, outcomes[:5])):
+                print(f"Sample {i+1}: Predicted {pred[0]:.3f} (conf {conf[0]:.2f}), Actual {actual}")
             return
             
         # Initialize trading
@@ -790,11 +808,12 @@ def main():
                             
                             # Wait for result
                             time.sleep(DURATION * 60)
-                            
+
                             result = I_want_money.check_win_v3(order_id)
-                            
+
                             if result is not None:
                                 total_trades += 1
+                                all_outcomes.append(result)
                                 if result > 0:
                                     successful_trades += 1
                                     print(f"Trade WON: ${result:.2f}")
