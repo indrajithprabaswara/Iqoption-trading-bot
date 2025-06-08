@@ -73,6 +73,12 @@ USERNAME = "eaglelab23@gmail.com"      # <<< --- !!! FILL YOUR IQ OPTION EMAIL H
 PASSWORD = "Polboti1@"          # <<< --- !!! FILL YOUR IQ OPTION PASSWORD HERE !!!
 PRACTICE_MODE = "PRACTICE"
 
+# If True the script only trains and evaluates the model without
+# connecting to IQ Option.  This is useful for quick testing inside
+# restricted environments where the IQ Option API might not be
+# reachable.
+TEST_MODE = True
+
 ASSET = "EURUSD-OTC"
 BASE_AMOUNT = 1
 DURATION = 1  # fixed trade duration in minutes
@@ -301,7 +307,7 @@ class ModelEnsemble:
     def predict(self, X):
         if not self.models:
             print("No models available for prediction")
-            return None
+            return None, None
             
         if self.feature_scaler is not None:
             X = self.feature_scaler.transform(X.reshape(-1, X.shape[-1])).reshape(X.shape)
@@ -319,7 +325,7 @@ class ModelEnsemble:
                 continue
         
         if not predictions:
-            return None
+            return None, None
             
         # Weighted ensemble prediction
         weights = np.array(weights)
@@ -328,8 +334,11 @@ class ModelEnsemble:
         weighted_predictions = np.zeros_like(predictions[0])
         for pred, weight in zip(predictions, weights):
             weighted_predictions += pred * weight
-            
-        return weighted_predictions
+
+        weighted_predictions = weighted_predictions.flatten()
+        confidence = np.abs(weighted_predictions - 0.5) * 2
+
+        return weighted_predictions, confidence
 
 #####################################
 # Pattern Recognizer
@@ -560,6 +569,27 @@ def get_news_sentiment():
     return random.uniform(0.4, 0.6)
 
 #####################################
+# Configuration Validation
+#####################################
+def validate_config():
+    """Ensure required configuration and data files are present"""
+    valid = True
+
+    if not USERNAME or not PASSWORD:
+        print("Username or password not set")
+        valid = False
+
+    if not os.path.exists(LOG_FILE):
+        print(f"Log file {LOG_FILE} not found")
+        valid = False
+
+    if not os.path.exists(FULL_HISTORY_LOG_FILE):
+        print(f"History log {FULL_HISTORY_LOG_FILE} not found")
+        valid = False
+
+    return valid
+
+#####################################
 # Data Loading and Validation
 #####################################
 def load_and_validate_data():
@@ -674,7 +704,11 @@ def main():
         
         # Train model
         print("\nTraining model ensemble...")
-        model_ensemble.train(features, outcomes)
+        model_ensemble.train_ensemble(features, outcomes)
+
+        if model_ensemble.best_accuracy < 0.75:
+            print(f"Training accuracy {model_ensemble.best_accuracy:.2f} below required threshold. Exiting.")
+            return
         
         if TEST_MODE:
             print("\nRunning in TEST MODE - skipping IQ Option connection")
@@ -682,10 +716,10 @@ def main():
             
             # Test prediction on a few samples
             test_samples = features[:5]
-            predictions = model_ensemble.predict(test_samples)
+            preds, confs = model_ensemble.predict(test_samples)
             print(f"\nTest predictions:")
-            for i, (pred, actual) in enumerate(zip(predictions, outcomes[:5])):
-                print(f"Sample {i+1}: Predicted {pred[0]:.3f}, Actual {actual}")
+            for i, (pred, conf, actual) in enumerate(zip(preds, confs, outcomes[:5])):
+                print(f"Sample {i+1}: Pred {pred:.3f} (conf {conf:.2f}), Actual {actual}")
             return
             
         # Initialize trading
@@ -775,11 +809,17 @@ def main():
                 
                 # Make trading decisions
                 if model_ensemble.models and time.time() - last_trade_time > MIN_SECONDS_BETWEEN_TRADES:
-                    pred, confidence = model_ensemble.predict(features)
-                    
-                    if trading_engine.should_trade(confidence[0], prices, [volume]):
-                        action = "call" if pred[0] > 0.5 else "put"
-                        print(f"\nPlacing {action.upper()} trade with confidence {confidence[0]:.2f}")
+                    preds, confidences = model_ensemble.predict(features)
+                    if preds is None:
+                        time.sleep(1)
+                        continue
+
+                    pred = preds[0]
+                    confidence = confidences[0]
+
+                    if trading_engine.should_trade(confidence, prices, [volume]):
+                        action = "call" if pred > 0.5 else "put"
+                        print(f"\nPlacing {action.upper()} trade with confidence {confidence:.2f}")
                         
                         status, order_id = I_want_money.buy(
                             current_trade_amount, ASSET, action, DURATION)
@@ -805,13 +845,16 @@ def main():
                                 log_trade(LOG_FILE, [
                                     current_time.isoformat(), order_id, ASSET,
                                     action, current_trade_amount, DURATION,
-                                    slope, confidence[0], 
+                                    slope, confidence,
                                     "win" if result > 0 else "loss",
-                                    result, ",".join(map(str, prices)),
-                                    ma, std, rsi, macd, signal, sentiment,
-                                    boll_sma, boll_up, boll_low, atr, volume,
-                                    hour, weekday, news
-                                ])
+                                result, ",".join(map(str, prices)),
+                                ma, std, rsi, macd, signal, sentiment,
+                                boll_sma, boll_up, boll_low, atr, volume,
+                                hour, weekday, news
+                            ])
+
+                                # Store outcome for future training
+                                all_outcomes.append(1 if result > 0 else 0)
                                 
                                 # Update accuracy tracking
                                 if total_trades > 0:
