@@ -157,7 +157,9 @@ class ModelEnsemble:
         drop2 = Dropout(0.3)(bn2)
         
         # Dense layers with skip connections
-        dense1 = Dense(64, activation='relu',
+        # Ensure the dense layer output matches the LSTM branch output so the
+        # subsequent Add() operation receives tensors with identical shapes.
+        dense1 = Dense(128, activation='relu',
                       kernel_regularizer=l2(0.001))(drop2)
         bn3 = BatchNormalization()(dense1)
         drop3 = Dropout(0.2)(bn3)
