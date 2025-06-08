@@ -1,0 +1,7 @@
+# Required Python packages
+# Install iqoptionapi manually from https://github.com/iqoptionapi/iqoptionapi
+
+numpy
+pandas
+scikit-learn
+tensorflow
